@@ -12,6 +12,11 @@ from DataLogger import DataLogger
 from KBestReader import KBestReader
 # from CoolingModule import CoolingModule
 
+<<<<<<< HEAD
+=======
+#from OakCam import OakCam
+
+>>>>>>> a0564e4790a6acfd702257adff3462deb32f37ff
 
 
 
@@ -29,7 +34,7 @@ class GToolBox:
 			self.OS = returned_value.split('=')[1].strip()
 		print(f"Operating System: {self.OS}")
 		# ===============================================================================
-
+		self.AIDetection = False
 		self.config = Config(self)
 		self.core = core # core is GPlayer main function itself
 		self.mav_conn, self.child_conn = multiprocessing.Pipe() # Pipe for modules with multiprocess
@@ -48,7 +53,16 @@ class GToolBox:
 		self.kBestReader = KBestReader(self)
 		#self.oakCam = OakCam(self)
 		self.dataLogger = DataLogger(self)
+<<<<<<< HEAD
 		
+=======
+		if self.OS != 'buster': # import JetsonDetect if not raspberry pi
+			
+			from JetsonDetect import JetsonDetect
+			self.jetsonDetect = JetsonDetect(self)
+			self.jetsonDetect.startLoop()
+			self.AIDetection = True
+>>>>>>> a0564e4790a6acfd702257adff3462deb32f37ff
 		
 		# networkManager is not started until after everything is ready
 		#self.oakCam.startLoop()
