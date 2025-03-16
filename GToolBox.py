@@ -12,12 +12,6 @@ from DataLogger import DataLogger
 from KBestReader import KBestReader
 # from CoolingModule import CoolingModule
 
-<<<<<<< HEAD
-=======
-#from OakCam import OakCam
-
->>>>>>> a0564e4790a6acfd702257adff3462deb32f37ff
-
 
 
 # GToolBox stores all the modules and initialize them
@@ -53,16 +47,7 @@ class GToolBox:
 		self.kBestReader = KBestReader(self)
 		#self.oakCam = OakCam(self)
 		self.dataLogger = DataLogger(self)
-<<<<<<< HEAD
 		
-=======
-		if self.OS != 'buster': # import JetsonDetect if not raspberry pi
-			
-			from JetsonDetect import JetsonDetect
-			self.jetsonDetect = JetsonDetect(self)
-			self.jetsonDetect.startLoop()
-			self.AIDetection = True
->>>>>>> a0564e4790a6acfd702257adff3462deb32f37ff
 		
 		# networkManager is not started until after everything is ready
 		#self.oakCam.startLoop()
