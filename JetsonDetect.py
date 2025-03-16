@@ -35,13 +35,14 @@ class JetsonDetect(GTool):
         ]
 
         
-        self.out_conn = multiprocessing.Queue(1)
-        self.p = multiprocessing.Process(target = self.InputLoop, args = (self.out_conn,)) 
+         
 		# 啟動process，告訴作業系統幫你創建一個process，是Async的
     def getConn(self):
         return self.out_conn
 
     def startLoop(self):
+        self.out_conn = multiprocessing.Queue(1)
+        self.p = multiprocessing.Process(target = self.InputLoop, args = (self.out_conn,))
         self.p.start()
         self.outputLoop = threading.Thread(target=self.OutputLoop)
         self.outputLoop.daemon = True

@@ -6,6 +6,7 @@ from gi.repository import Gst, GLib, GObject
 import GToolBox
 from GTool import GTool
 import VideoFormat
+from JetsonDetect import JetsonDetect
 
 class VideoManager(GTool):
 	def __init__(self, toolbox):
@@ -18,6 +19,7 @@ class VideoManager(GTool):
 		self.pipelines_state = []
 		self.camera_format = []
 		self.videoFormatList = {}
+		self.videoWithYUYV = []
 		
 		if(self._toolBox.OS == 'bionic'): # for Ubuntu 18.04 (Jetson Nano
 				self.get_video_format_Ubuntu_18_04()
@@ -40,6 +42,11 @@ class VideoManager(GTool):
 			index += 1
 		#if self.toolBox().oakCam.hasCamera:
 		#	print("      - OAK camera connected")
+
+		if self.toolBox().OS != 'buster':
+			self.jetsonDetect = JetsonDetect(self)
+			#self.jetsonDetect.startLoop()
+			pass
 
 	def createPipelines(self):
 		for i in range(0, 10):
@@ -73,9 +80,15 @@ class VideoManager(GTool):
 					self.camera_format.append('video{} {} width={} height={} framerate={}'.format(i,form, width, height , fps))
 					index = self._toolBox.config.getVideoFormatIndex(width,height,fps)
 					if index != -1:
+						if form == 'YUYV':
+								if index not in self.videoWithYUYV:
+									self.videoWithYUYV.append(index)
+								else:
+									pass
 						if index not in self.videoFormatList:
 							self.videoFormatList[index] = []
 							self.videoFormatList[index].append([i,form])
+							
 						else:
 							video_index = 0
 							add = True
@@ -91,7 +104,7 @@ class VideoManager(GTool):
 								video_index += 1
 							if add == True:
 								self.videoFormatList[index].append([i,form])
-						
+		print("video with YUYV:", self.videoWithYUYV)			
 	def get_video_format_Ubuntu_18_04(self):	
 		#Check camera device
 		for i in range(0,10):

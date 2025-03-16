@@ -45,6 +45,9 @@ def getFormatCMD(sys, cam, format, width, height, framerate, encoder, IP, port):
 			
 			else:
 				gstring +='jpegenc quality=30 ! rtpjpegpay ! udpsink host={} port={}'.format(IP, port)
+		elif format == 'H264':
+			gstring += ' num-buffers=-1 ! video/x-h264 ! '
+			gstring +=' rtph264pay pt=96 config-interval=1 ! udpsink host={} port={}'.format(IP, port)
 		else:
 			if format == 'RGBP':
 				format = 'RGB16'
@@ -52,12 +55,9 @@ def getFormatCMD(sys, cam, format, width, height, framerate, encoder, IP, port):
 				format = 'BGR'
 			elif format == 'Y1':
 				format = 'UYVY'
-			gstring += ' num-buffers=-1 ! video/x-raw,format={}! videoscale ! videoconvert ! videoflip method=rotate-180 ! video/x-raw, format=YUY2, width=640,height=480 ! '.format(format)
-			if mid != 'nan':
-				gstring += (mid+' ! ')
-			if encoder == 'h264':
-				gstring +='videoconvert ! videoflip method=clockwise ! omxh264enc ! rtph264pay pt=96 config-interval=1 ! udpsink host={} port={}'.format(IP, port)
-
 			else:
-				gstring +='jpegenc quality=30 ! rtpjpegpay ! udpsink host={} port={}'.format(IP, port)
+				return ''
+			gstring += ' num-buffers=-1 ! video/x-raw,format={}! videoscale ! videoconvert ! videoflip method=rotate-180 ! video/x-raw, format=YUY2, width=640,height=480 ! '.format(format)
+			
+
 		return gstring

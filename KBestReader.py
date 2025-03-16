@@ -65,8 +65,8 @@ class KBestReader():
             except subprocess.TimeoutExpired:
                 print("SNMP command timed out.")
                 print("Please confirm whether the KBest device is connected.")
-                self.local_rssi = -1
-                self.remote_rssi = -1
+                self.local_rssi = 0
+                self.remote_rssi = 0
                 self.tx_rate = -1
                 self.rx_rate = -1
                 return None
@@ -74,8 +74,8 @@ class KBestReader():
                 print("Please confirm that the SNMP method has been downloaded to the computer.")
             except Exception as e:
                 print(f"Exception occurred: {e}")
-                self.local_rssi = -1
-                self.remote_rssi = -1
+                self.local_rssi = 0
+                self.remote_rssi = 0
                 self.tx_rate = -1
                 self.rx_rate = -1
                 return None
