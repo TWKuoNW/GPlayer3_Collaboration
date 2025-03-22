@@ -19,6 +19,7 @@ COMMAND = b'\x02'
 QUIT = b'\x03'
 SENSOR = b'\x04'
 CONTROL = b'\x05'
+DETECT = b'\x06'
 
 # For dual ip auto switching mechanism, all internet traffics are going through NetworkManager
 class NetworkManager(GTool):
@@ -187,6 +188,7 @@ class NetworkManager(GTool):
                             videoIndex = video[0]
                             msg += struct.pack("<2B", videoIndex, form)   
                     print("send videoformat")
+                    print(msg)
                     self.sendMsg(FORMAT, msg)
 
                 
@@ -206,8 +208,9 @@ class NetworkManager(GTool):
                 else:
                     encoder = 'mjpeg'
                 #port = int(np.fromstring(indata[2:], dtype='<u4'))
-                port = int.from_bytes(indata[3:], 'little')
-                print(f"videoNo: {videoNo}, formatIndex: {formatIndex}, port: {port}")
+                port = int.from_bytes(indata[3:7], 'little')
+                ai_enabled = int(indata[7])
+                print(f"videoNo: {videoNo}, formatIndex: {formatIndex}, port: {port}, ai: {ai_enabled}")
 
                 if formatIndex not in self._toolBox.videoManager.videoFormatList:
                     print('format error')
@@ -221,7 +224,7 @@ class NetworkManager(GTool):
                 ip = addr[0]
                 formatInfo = self._toolBox.config.getFormatInfo(formatIndex)
                 print(f"play: video{videoNo}, {formatStr}, {formatInfo[0]}x{formatInfo[1]} {formatInfo[2]}/1, encoder={encoder}, ip={ip}, port={port}")
-                self._toolBox.videoManager.play(videoNo, formatStr, formatInfo[0], formatInfo[1], formatInfo[2], encoder, ip, port)
+                self._toolBox.videoManager.play(videoNo, formatStr, formatInfo[0], formatInfo[1], formatInfo[2], encoder, ip, port, ai_enabled)
                 
 
             elif header == SENSOR[0]:
@@ -239,3 +242,9 @@ class NetworkManager(GTool):
                 boat_id = int(indata[0])
                 control_type = int(indata[1])
                 self._toolBox.deviceManager.processControl(control_type, indata[2:])
+
+            elif header == DETECT[0]:
+                indata = indata[1:]
+                print("[DETECT]")
+                boat_id = int(indata[0])
+                self._toolBox.videoManager.processDetection(indata[1:])

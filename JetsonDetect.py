@@ -17,7 +17,8 @@ from GTool import GTool
 class JetsonDetect(GTool):
     def __init__(self, toolbox):
         super().__init__(toolbox)
-
+        self.out_conn = multiprocessing.Queue(1)
+        self.in_conn = multiprocessing.Queue(1)
 
         self.enabled = True
         self.detectionMetric = [
@@ -33,15 +34,21 @@ class JetsonDetect(GTool):
                 0, 0, 0, 0, 0, 0,
                 0, 0, 0, 0, 0, 0
         ]
-
-        
-        self.out_conn = multiprocessing.Queue(1)
-        self.p = multiprocessing.Process(target = self.InputLoop, args = (self.out_conn,)) 
+    def play(self, msg):
+        msg.insert(0, "p")
+        self.in_conn.put(msg)
+    def stop(self):
+        self.in_conn.put(["x"])
+    def sendMsg(self, msg):
+        self.in_conn.put(msg)
+         
 		# 啟動process，告訴作業系統幫你創建一個process，是Async的
     def getConn(self):
         return self.out_conn
 
     def startLoop(self):
+        
+        self.p = multiprocessing.Process(target = self.InputLoop, args = (self.out_conn, self.in_conn))
         self.p.start()
         self.outputLoop = threading.Thread(target=self.OutputLoop)
         self.outputLoop.daemon = True
@@ -63,13 +70,34 @@ class JetsonDetect(GTool):
         while True:
             self.conn.put(self.detectionMetric)
             time.sleep(0.05)
-    def InputLoop(self, conn): # Thread that read data from oak camera
+    def createPipeline(self, msg):
+        if self.cap_send != None:
+            self.cap_send.release()
+        if self.out_send != None:
+            self.cap_send.release()
+        video_pipeline = f'v4l2src device=/dev/video{msg[0]} ! video/x-raw, format=YUY2, width={msg[2]}, height={msg[3]}, framerate={msg[4]}/1 ! videoconvert ! appsink'
+        self.cap_send = cv2.VideoCapture(video_pipeline, cv2.CAP_GSTREAMER)
+        self.w = self.cap_send.get(cv2.CAP_PROP_FRAME_WIDTH)
+        self.h = self.cap_send.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        fps = self.cap_send.get(cv2.CAP_PROP_FPS)
+        self.out_send = cv2.VideoWriter(f'appsrc ! videoconvert ! video/x-raw,format=I420 ! nvvideoconvert ! video/x-raw(memory:NVMM) ! nvv4l2h264enc ! rtph264pay pt=96 config-interval=1 ! udpsink host={msg[5]} port={msg[6]}'\
+            ,cv2.CAP_GSTREAMER\
+            ,0\
+            , int(fps)\
+            , (int(self.w), int(self.h))\
+            , True)
+
+    def InputLoop(self, conn, input): # Thread that read data from oak camera
         self.enabled = True
         self.conn = conn
         self.connLoop = threading.Thread(target=self.connLoop)
         self.connLoop.daemon = True
         self.connLoop.start()
-        
+        self.cap_send = None
+        self.out_send = None
+        self.w = 0
+        self.h = 0
+        self.playing = False
 
         self.device = torch.device('cuda:0')
         self.Engine = TRTModule('yolov8s.engine', self.device)
@@ -78,27 +106,32 @@ class JetsonDetect(GTool):
 
         # set desired output names order
         self.Engine.set_desired(['num_dets', 'bboxes', 'scores', 'labels'])
-
         
-        video_pipeline = 'v4l2src device=/dev/video0 ! video/x-raw, format=YUY2, width=640, height=480, framerate=30/1 ! videoconvert ! appsink'
-        self.cap_send = cv2.VideoCapture(video_pipeline, cv2.CAP_GSTREAMER)
-        self.w = self.cap_send.get(cv2.CAP_PROP_FRAME_WIDTH)
-        self.h = self.cap_send.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        fps = self.cap_send.get(cv2.CAP_PROP_FPS)
-        self.out_send = cv2.VideoWriter('appsrc ! videoconvert ! video/x-raw,format=I420 ! nvvideoconvert ! video/x-raw(memory:NVMM) ! nvv4l2h264enc ! rtph264pay pt=96 config-interval=1 ! udpsink host=192.168.0.110 port=5201'\
-            ,cv2.CAP_GSTREAMER\
-            ,0\
-            , int(fps)\
-            , (int(self.w), int(self.h))\
-            , True)
-        if not self.cap_send.isOpened():
-            print('VideoCapture not opened')
-            exit(0)
-        if not self.out_send.isOpened():
-            print('VideoWriter not opened')
-            exit(0)
+        
         while True:
-            
+            if not self.playing:
+                msg = input.get()
+                if msg[0] == "p":
+                    self.createPipeline(msg[1:])
+                    if not self.cap_send.isOpened():
+                        print('VideoCapture not opened')
+                        continue
+                    if not self.out_send.isOpened():
+                        print('VideoWriter not opened')
+                        continue
+                    self.playing = True
+                else:
+                    continue
+            elif not input.empty():
+                msg = input.get()
+                if msg[0] == "x":
+                    if self.cap_send != None:
+                        self.cap_send.release()
+                    if self.out_send != None:
+                        self.cap_send.release()
+                    self.playing = False
+                    continue
+                
             ret,frame = self.cap_send.read()
             if not ret:
                 print('empty frame')

@@ -7,6 +7,7 @@ import GToolBox
 from GTool import GTool
 import VideoFormat
 
+
 class VideoManager(GTool):
 	def __init__(self, toolbox):
 		super().__init__(toolbox)
@@ -18,6 +19,8 @@ class VideoManager(GTool):
 		self.pipelines_state = []
 		self.camera_format = []
 		self.videoFormatList = {}
+		self.videoWithYUYV = []
+		self.ai_cam = []
 		
 		if(self._toolBox.OS == 'bionic'): # for Ubuntu 18.04 (Jetson Nano
 				self.get_video_format_Ubuntu_18_04()
@@ -40,6 +43,8 @@ class VideoManager(GTool):
 			index += 1
 		#if self.toolBox().oakCam.hasCamera:
 		#	print("      - OAK camera connected")
+
+		
 
 	def createPipelines(self):
 		for i in range(0, 10):
@@ -70,12 +75,18 @@ class VideoManager(GTool):
 					width, height = size.split('x')
 				elif j.split()[0] == 'Interval:':
 					fps = j.split()[3][1:].split('.')[0]
-					self.camera_format.append('video{} {} width={} height={} framerate={}'.format(i,form, width, height , fps))
+					self.camera_format.append([i,form, width, height , fps])
 					index = self._toolBox.config.getVideoFormatIndex(width,height,fps)
 					if index != -1:
+						if form == 'YUYV':
+								if i not in self.videoWithYUYV:
+									self.videoWithYUYV.append(i)
+								else:
+									pass
 						if index not in self.videoFormatList:
 							self.videoFormatList[index] = []
 							self.videoFormatList[index].append([i,form])
+							
 						else:
 							video_index = 0
 							add = True
@@ -91,7 +102,7 @@ class VideoManager(GTool):
 								video_index += 1
 							if add == True:
 								self.videoFormatList[index].append([i,form])
-						
+		print("video with YUYV:", self.videoWithYUYV)			
 	def get_video_format_Ubuntu_18_04(self):	
 		#Check camera device
 		for i in range(0,10):
@@ -136,26 +147,88 @@ class VideoManager(GTool):
 							if add == True:
 								self.videoFormatList[index].append([i,form])
 
-	def play(self, cam, format, width, height, framerate, encoder, IP, port):
+	def getYUYVFrameRate(self, cam, width, height):
+		fps = []
+		for format in self.camera_format:
+			if cam == format[0] and  format[1] == "YUYV" and format[2] == width and format[3] == height:
+				return format[4]
+		return ""
+
+	def play(self, cam, format, width, height, framerate, encoder, IP, port, ai_enabled):
 		gstring = VideoFormat.getFormatCMD(self._toolBox.OS, cam, format, width, height, framerate, encoder, IP, port)
 		print(gstring)
 		if port in self.portOccupied:
 			videoToStop = self.portOccupied[port]
+			if cam in self.ai_cam:
+				# stop ai cam
+				print(f"stop ai on cam:{cam}")
+				self.ai_cam.remove(cam)
 			self.pipelines[videoToStop].set_state(Gst.State.NULL)
 			self.pipelines_state[videoToStop] = False
 			print("  -quit occupied: video"+str(videoToStop))
-
 		self.portOccupied[port] = cam
+			
 		if self.pipelines_state[cam] == True:
 			self.pipelines[cam].set_state(Gst.State.NULL)
-			self.pipelines[cam] = Gst.parse_launch(gstring)
-			self.pipelines[cam].set_state(Gst.State.PLAYING)
+		if ai_enabled == 1:
+			if cam not in self.ai_cam:
+				YUYVfps = self.getYUYVFrameRate(cam, width, height)
+				if YUYVfps != "":
+					self._toolBox.jetsonDetect.play([cam, "YUYV", width, height, YUYVfps, IP, port])
+					print(f"start ai on cam:{cam}")
+					self.ai_cam.append(cam)
+				else:
+					print(f"video{cam} had no YUYV format")
 
+				# start ai camera
+			else:
+				print(f"restart ai on cam:{cam}")
+				# restart ai camera
+				pass
+			pass
 		else:
-			self.pipelines[cam] = Gst.parse_launch(gstring)
-			self.pipelines[cam].set_state(Gst.State.PLAYING)
-			self.pipelines_state[cam] = True
-	def stop(self, video):
-		if self.pipelines_state[video] == True:
-			self.pipelines[video].set_state(Gst.State.NULL)
-			self.pipelines_state[video] = False
+			if cam in self.ai_cam:
+				# stop ai cam
+
+				print(f"stop ai on cam:{cam}")
+				self._toolBox.jetsonDetect.stop()
+				self.ai_cam.remove(cam)
+				pass
+			else:
+				self.pipelines[cam] = Gst.parse_launch(gstring)
+				self.pipelines[cam].set_state(Gst.State.PLAYING)
+				self.pipelines_state[cam] = True
+	def stop(self, cam):
+		for port in self.portOccupied:
+			if self.portOccupied[port] == cam:
+				self.portOccupied.pop(port, None)
+				break
+		if cam in self.ai_cam:
+			# stop ai cam
+			print(f"stop ai on cam:{cam}")
+			self._toolBox.jetsonDetect.stop()
+			self.ai_cam.remove(cam)
+			pass
+		if self.pipelines_state[cam] == True:
+			self.pipelines[cam].set_state(Gst.State.NULL)
+			self.pipelines_state[cam] = False
+
+	def processDetection(self, msg):
+		cmd_ID = int(msg[0])
+		videoNo = int(msg[1])
+		if cmd_ID == 0:
+			enabled = msg[2]
+			formatIndex = msg[3]
+			if formatIndex not in self.videoFormatList:
+				print('format error')
+				return
+			formatStr = ""
+			for formatpair in self.videoFormatList[formatIndex]:
+				if formatpair[0] == videoNo:
+					formatStr = formatpair[1]
+			if formatStr == "":
+				return
+			print(f"VideoManager::processDetection: video{videoNo} {formatStr} {self._toolBox.config.getFormatInfo(formatIndex)} set {enabled}")
+		elif cmd_ID == 1:
+			if cmd_ID == 0:
+				print("VideoManager::processDetection: cmd:1")
