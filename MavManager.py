@@ -238,6 +238,7 @@ class MavManager(GTool):
 			self.lock2.release()
 			self.toolBox.networkManager.sendMsg(SENSOR, self.sensor_group_list[4].pack())
 			self.toolBox.networkManager.sendMsg(SENSOR, self.sensor_group_list[3].pack())
+			self.toolBox.jetsonDetect.updateIMU([self.attitude['pitch'], self.attitude['roll']])
 			#self.send_distance_sensor_data(25,10)
 			time.sleep(0.3)
 

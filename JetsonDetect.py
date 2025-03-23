@@ -4,15 +4,17 @@ from pathlib import Path
 import threading
 import time
 import multiprocessing 
-
+import math
 
 import cv2
 import torch
+import numpy as np
 
 from config import CLASSES, COLORS
 from models.torch_utils import det_postprocess
 from models.utils import blob, letterbox, path_to_list
 from GTool import GTool
+from distance import distance, getR0
 
 class JetsonDetect(GTool):
     def __init__(self, toolbox):
@@ -39,6 +41,9 @@ class JetsonDetect(GTool):
         self.in_conn.put(msg)
     def stop(self):
         self.in_conn.put(["x"])
+    def updateIMU(self, msg): #[pitch, roll]
+        msg.insert(0, "i")
+        self.in_conn.put(msg)
     def sendMsg(self, msg):
         self.in_conn.put(msg)
          
@@ -106,8 +111,13 @@ class JetsonDetect(GTool):
 
         # set desired output names order
         self.Engine.set_desired(['num_dets', 'bboxes', 'scores', 'labels'])
-        
-        
+        K0 = np.array(
+            [[300, 0., 320],
+            [0., 300, 240],
+            [0., 0., 1.]]
+        )
+        cam_height = 0.3
+        R0 = getR0(math.pi, 0)
         while True:
             if not self.playing:
                 msg = input.get()
@@ -131,6 +141,11 @@ class JetsonDetect(GTool):
                         self.cap_send.release()
                     self.playing = False
                     continue
+                elif msg[0] == "i":
+                    pitch = math.pi/2 - float(msg[1])
+                    roll = - float(msg[2])
+                    R0 = getR0(pitch, roll)
+                    #print(R0)
                 
             ret,frame = self.cap_send.read()
             if not ret:
@@ -144,7 +159,7 @@ class JetsonDetect(GTool):
             tensor = torch.asarray(tensor, device=self.device)
             # inference
             data = self.Engine(tensor)
-
+            
             bboxes, scores, labels = det_postprocess(data)
             bboxes -= dwdh
             bboxes /= ratio
@@ -167,18 +182,23 @@ class JetsonDetect(GTool):
                 cls_id = int(label)
                 cls = CLASSES[cls_id]
                 color = COLORS[cls]
+                x = bbox[0]
+                y = bbox[1]
+                w = bbox[2] - bbox[0]
+                h = bbox[3] - bbox[1]
+                d = distance(K0, R0, cam_height, x+w/2, y+h)
                 cv2.rectangle(draw,tuple(bbox[:2]), tuple(bbox[2:]), color, 2)
                 cv2.putText(draw,
-                            f'{cls}:{score:.3f}', (bbox[0], bbox[1] - 2),
+                            f'{cls} {d:.1f}m', (bbox[0], bbox[1] - 2),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.75, [225, 255, 255], thickness=2)
                 
                 if count < 10:
                     self.detectionMetric[count*6] = cls_id
-                    self.detectionMetric[count*6+1] = bbox[0]
-                    self.detectionMetric[count*6+2] = bbox[1]
-                    self.detectionMetric[count*6+3] = bbox[2] - bbox[0]
-                    self.detectionMetric[count*6+4] = bbox[3] - bbox[1]
+                    self.detectionMetric[count*6+1] = x
+                    self.detectionMetric[count*6+2] = y
+                    self.detectionMetric[count*6+3] = w
+                    self.detectionMetric[count*6+4] = h
                     self.detectionMetric[count*6+5] = 0
                 count += 1
             
