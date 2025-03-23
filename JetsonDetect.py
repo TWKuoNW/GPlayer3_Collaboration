@@ -16,8 +16,147 @@ from models.utils import blob, letterbox, path_to_list
 from GTool import GTool
 from distance import distance, getR0
 
+multiprocessing.set_start_method('spawn', force=True)
+
+
+def detectTask(conn, input): # Thread that read data from oak camera
+    enabled = True
+    #connLoop = threading.Thread(target=connLoop)
+    #connLoop.daemon = True
+    #connLoop.start()
+    cap_send = None
+    out_send = None
+    w = 0
+    h = 0
+    playing = False
+
+    device = torch.device('cuda:0')
+    Engine = TRTModule('yolov8s.engine', device)
+    H, W = Engine.inp_info[0].shape[-2:]
+    
+
+    # set desired output names order
+    Engine.set_desired(['num_dets', 'bboxes', 'scores', 'labels'])
+    K0 = np.array(
+        [[300, 0., 320],
+        [0., 300, 240],
+        [0., 0., 1.]]
+    )
+    cam_height = 0.3
+    R0 = getR0(math.pi, 0)
+    while True:
+        if not playing:
+            msg = input.get()
+            if msg[0] == "p":
+                msg = msg[1:]
+                if cap_send != None:
+                    cap_send.release()
+                if out_send != None:
+                    cap_send.release()
+                video_pipeline = f'v4l2src device=/dev/video{msg[0]} ! video/x-raw, format=YUY2, width={msg[2]}, height={msg[3]}, framerate={msg[4]}/1 ! videoconvert ! appsink'
+                cap_send = cv2.VideoCapture(video_pipeline, cv2.CAP_GSTREAMER)
+                w = cap_send.get(cv2.CAP_PROP_FRAME_WIDTH)
+                h = cap_send.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                fps = cap_send.get(cv2.CAP_PROP_FPS)
+                out_send = cv2.VideoWriter(f'appsrc ! videoconvert ! video/x-raw,format=I420 ! nvvideoconvert ! video/x-raw(memory:NVMM) ! nvv4l2h264enc ! rtph264pay pt=96 config-interval=1 ! udpsink host={msg[5]} port={msg[6]}'\
+                    ,cv2.CAP_GSTREAMER\
+                    ,0\
+                    , int(fps)\
+                    , (int(w), int(h))\
+                    , True)
+
+                if not cap_send.isOpened():
+                    print('VideoCapture not opened')
+                    continue
+                if not out_send.isOpened():
+                    print('VideoWriter not opened')
+                    continue
+                playing = True
+            else:
+                continue
+        elif not input.empty():
+            msg = input.get()
+            if msg[0] == "x":
+                if cap_send != None:
+                    cap_send.release()
+                if out_send != None:
+                    cap_send.release()
+                playing = False
+                continue
+            elif msg[0] == "i":
+                pitch = math.pi/2 - float(msg[1])
+                roll = - float(msg[2])
+                R0 = getR0(pitch, roll)
+                #print(R0)
+            
+        ret,frame = cap_send.read()
+        if not ret:
+            print('empty frame')
+            break
+        draw = frame.copy()
+        frame, ratio, dwdh = letterbox(frame, (W, H))
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        tensor = blob(rgb, return_seg=False)
+        dwdh = torch.asarray(dwdh * 2, dtype=torch.float32, device=device)
+        tensor = torch.asarray(tensor, device=device)
+        # inference
+        data = Engine(tensor)
+        
+        bboxes, scores, labels = det_postprocess(data)
+        bboxes -= dwdh
+        bboxes /= ratio
+        detectionMetric = [
+        #   label[0], x[1], y[2], width[3], height[4], dist[5]
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0
+        ]
+        count = 0
+        for (bbox, score, label) in zip(bboxes, scores, labels):
+            bbox = bbox.round().int().tolist()
+            cls_id = int(label)
+            cls = CLASSES[cls_id]
+            color = COLORS[cls]
+            x = bbox[0]
+            y = bbox[1]
+            w = bbox[2] - bbox[0]
+            h = bbox[3] - bbox[1]
+            d = distance(K0, R0, cam_height, x+w/2, y+h)
+            cv2.rectangle(draw,tuple(bbox[:2]), tuple(bbox[2:]), color, 2)
+            cv2.putText(draw,
+                        f'{cls} {d:.1f}m', (bbox[0], bbox[1] - 2),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.75, [225, 255, 255], thickness=2)
+            
+            if count < 10:
+                detectionMetric[count*6] = cls_id
+                detectionMetric[count*6+1] = x
+                detectionMetric[count*6+2] = y
+                detectionMetric[count*6+3] = w
+                detectionMetric[count*6+4] = h
+                detectionMetric[count*6+5] = 0
+            count += 1
+        
+        
+        if out_send.isOpened():
+            out_send.write(draw)
+        if conn.empty():
+            conn.put(detectionMetric, block= False)
+
+    out_send.release()
+    cap_send.release()
+
+
 class JetsonDetect(GTool):
     def __init__(self, toolbox):
+
         super().__init__(toolbox)
         self.out_conn = multiprocessing.Queue(1)
         self.in_conn = multiprocessing.Queue(1)
@@ -53,11 +192,11 @@ class JetsonDetect(GTool):
 
     def startLoop(self):
         
-        self.p = multiprocessing.Process(target = self.InputLoop, args = (self.out_conn, self.in_conn))
+        self.p = multiprocessing.Process(target = detectTask, args = (self.out_conn, self.in_conn))
         self.p.start()
-        self.outputLoop = threading.Thread(target=self.OutputLoop)
-        self.outputLoop.daemon = True
-        self.outputLoop.start()
+        #self.outputLoop = threading.Thread(target=self.OutputLoop)
+        #self.outputLoop.daemon = True
+        #self.outputLoop.start()
 
     def OutputLoop(self): # Thread that send data to the networkmanager
         while True:
@@ -92,123 +231,7 @@ class JetsonDetect(GTool):
             , (int(self.w), int(self.h))\
             , True)
 
-    def InputLoop(self, conn, input): # Thread that read data from oak camera
-        self.enabled = True
-        self.conn = conn
-        self.connLoop = threading.Thread(target=self.connLoop)
-        self.connLoop.daemon = True
-        self.connLoop.start()
-        self.cap_send = None
-        self.out_send = None
-        self.w = 0
-        self.h = 0
-        self.playing = False
-
-        self.device = torch.device('cuda:0')
-        self.Engine = TRTModule('yolov8s.engine', self.device)
-        self.H, self.W = self.Engine.inp_info[0].shape[-2:]
-        
-
-        # set desired output names order
-        self.Engine.set_desired(['num_dets', 'bboxes', 'scores', 'labels'])
-        K0 = np.array(
-            [[300, 0., 320],
-            [0., 300, 240],
-            [0., 0., 1.]]
-        )
-        cam_height = 0.3
-        R0 = getR0(math.pi, 0)
-        while True:
-            if not self.playing:
-                msg = input.get()
-                if msg[0] == "p":
-                    self.createPipeline(msg[1:])
-                    if not self.cap_send.isOpened():
-                        print('VideoCapture not opened')
-                        continue
-                    if not self.out_send.isOpened():
-                        print('VideoWriter not opened')
-                        continue
-                    self.playing = True
-                else:
-                    continue
-            elif not input.empty():
-                msg = input.get()
-                if msg[0] == "x":
-                    if self.cap_send != None:
-                        self.cap_send.release()
-                    if self.out_send != None:
-                        self.cap_send.release()
-                    self.playing = False
-                    continue
-                elif msg[0] == "i":
-                    pitch = math.pi/2 - float(msg[1])
-                    roll = - float(msg[2])
-                    R0 = getR0(pitch, roll)
-                    #print(R0)
-                
-            ret,frame = self.cap_send.read()
-            if not ret:
-                print('empty frame')
-                break
-            draw = frame.copy()
-            frame, ratio, dwdh = letterbox(frame, (self.W, self.H))
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            tensor = blob(rgb, return_seg=False)
-            dwdh = torch.asarray(dwdh * 2, dtype=torch.float32, device=self.device)
-            tensor = torch.asarray(tensor, device=self.device)
-            # inference
-            data = self.Engine(tensor)
-            
-            bboxes, scores, labels = det_postprocess(data)
-            bboxes -= dwdh
-            bboxes /= ratio
-            self.detectionMetric = [
-            #   label[0], x[1], y[2], width[3], height[4], dist[5]
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0
-            ]
-            count = 0
-            for (bbox, score, label) in zip(bboxes, scores, labels):
-                bbox = bbox.round().int().tolist()
-                cls_id = int(label)
-                cls = CLASSES[cls_id]
-                color = COLORS[cls]
-                x = bbox[0]
-                y = bbox[1]
-                w = bbox[2] - bbox[0]
-                h = bbox[3] - bbox[1]
-                d = distance(K0, R0, cam_height, x+w/2, y+h)
-                cv2.rectangle(draw,tuple(bbox[:2]), tuple(bbox[2:]), color, 2)
-                cv2.putText(draw,
-                            f'{cls} {d:.1f}m', (bbox[0], bbox[1] - 2),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.75, [225, 255, 255], thickness=2)
-                
-                if count < 10:
-                    self.detectionMetric[count*6] = cls_id
-                    self.detectionMetric[count*6+1] = x
-                    self.detectionMetric[count*6+2] = y
-                    self.detectionMetric[count*6+3] = w
-                    self.detectionMetric[count*6+4] = h
-                    self.detectionMetric[count*6+5] = 0
-                count += 1
-            
-            
-            if self.out_send.isOpened():
-                self.out_send.write(draw)
-            if cv2.waitKey(1)&0xFF == ord('q'):
-                break
-        self.out_send.release()
-        self.cap_send.release()
+    
             
 
 
