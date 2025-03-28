@@ -108,6 +108,7 @@ def detectTask(os, conn, input): # Thread that read data from oak camera
         detect_matrix = []
         for box, clas in zip(boxes,classes):
             x1, y1, x2, y2 = box
+            depth = distance(K0, R0, cam_height, int(x1)+(int(x2)-int(x1))/2, int(y2))
             #color = (0, 0, 255)
             #cv2.rectangle(annotated_frame,(int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 2)
             #cv2.putText(annotated_frame,
@@ -175,7 +176,7 @@ class JetsonDetect(GTool):
             data += struct.pack("<H", result[2])
             data += struct.pack("<H", result[3])
             data += struct.pack("<H", result[4])
-            data += struct.pack("<H", result[5])
+            data += struct.pack("<f", result[5])
         self._toolBox.networkManager.sendMsg(b'\x06', data)
 
 
