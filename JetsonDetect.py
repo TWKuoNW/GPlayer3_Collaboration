@@ -96,7 +96,7 @@ def detectTask(os, conn, input): # Thread that read data from oak camera
         if not ret:
             print('JetsonDetect: Error!! empty frame')
             break
-        annotated_frame = frame.copy()
+        #annotated_frame = frame.copy()
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = model.predict(frame, conf=0.5, verbose=False)
 
@@ -108,16 +108,16 @@ def detectTask(os, conn, input): # Thread that read data from oak camera
         detect_matrix = []
         for box, clas in zip(boxes,classes):
             x1, y1, x2, y2 = box
-            color = (0, 0, 255)
-            cv2.rectangle(annotated_frame,(int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 2)
-            cv2.putText(annotated_frame,
-                f'{cls_name[int(clas)]}', (int(x1), int(y1) - 2),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.75, [225, 255, 255], thickness=2)
-            detect_matrix.append([int(clas), int(x1), int(y1), int(x2)-int(x1), int(y2)-int(y1)])
+            #color = (0, 0, 255)
+            #cv2.rectangle(annotated_frame,(int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), 2)
+            #cv2.putText(annotated_frame,
+            #    f'{cls_name[int(clas)]}', (int(x1), int(y1) - 2),
+            #    cv2.FONT_HERSHEY_SIMPLEX,
+            #    0.75, [225, 255, 255], thickness=2)
+            detect_matrix.append([int(clas), int(x1), int(y1), int(x2)-int(x1), int(y2)-int(y1), depth])
         
         if out_send.isOpened():
-            out_send.write(annotated_frame)
+            out_send.write(frame)
         if conn.empty():
             if not conn.full():
                 conn.put(detect_matrix, block= False)
@@ -169,7 +169,7 @@ class JetsonDetect(GTool):
             return
         data += struct.pack("<B", int(self.video_no)) #video no
         for result in results:
-            x1, y1, x2, y2 = box
+            print(result)
             data += struct.pack("<B", result[0])
             data += struct.pack("<H", result[1])
             data += struct.pack("<H", result[2])
