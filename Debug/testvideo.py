@@ -23,7 +23,12 @@ while True:
         print('empty frame')
         break
     if out_send.isOpened():
-        out_send.write(frame)
+        
+        results = model.track(frame, persist=True)
+
+        # Visualize the results on the frame
+        annotated_frame = results[0].plot()
+        out_send.write(annotated_frame)
 
 out_send.release()
 cap_send.release()
