@@ -12,8 +12,8 @@ def distance(K, R, h, u, v):
     scale = h / Pw[-1]  # 讓 Z = 0
     Pw_ground = -Pw * scale  
 
-    dist = np.linalg.norm(Pw_ground[:2])  # 只考慮 X, Y 平面上的距離
-    return dist
+    #dist = np.linalg.norm(Pw_ground[:2])  # 只考慮 X, Y 平面上的距離
+    return Pw_ground
 
 def getR0(pitch, roll):
     """
