@@ -1,5 +1,3 @@
-#from models import TRTModule  # isort:skip
-
 import argparse
 from pathlib import Path
 import threading
@@ -8,10 +6,7 @@ import multiprocessing
 import math
 import struct
 from scipy.spatial.transform import Rotation
-
 import cv2
-
-import torch
 import numpy as np
 
 from config import CLASSES, COLORS
@@ -34,10 +29,11 @@ def detectTask(os, conn, input): # Thread that read data from oak camera
     if os == 'jammy': # Jetson orin nano
         engine = 'engine/orin_nano/yolov8s.engine'
         encode_string = 'x264enc tune=zerolatency speed-preset=superfast'
-    else: # Jetson xavier
+    elif os == 'focal': # Jetson xavier
         engine = 'engine/xavier/yolov8s.engine'
         encode_string = 'video/x-raw,format=I420 ! nvvideoconvert ! video/x-raw(memory:NVMM) ! nvv4l2h264enc'
-
+    else:
+        return
     K0 = np.array(
         [[1000, 0., 320],
         [0., 1000, 240],
