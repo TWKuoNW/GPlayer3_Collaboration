@@ -1,5 +1,5 @@
 import os
-
+import logging
 os.environ['MAVLINK20'] = '1'
 os.environ['MAVLINK_DIALECT'] = 'ardupilotmega'
 
@@ -14,6 +14,9 @@ from GTool import GTool
 # cannot be resent, because they become Python strings (not bytestrings)
 # This converts those messages so your code doesn't crash when
 # you try to send the message again.
+# sudo modprobe cdc_acm
+# echo '1-2.4.3' | sudo tee /sys/bus/usb/drivers/usb/unbind
+# echo '1-2.4.3' | sudo tee /sys/bus/usb/drivers/usb/bind
 def fixMAVLinkMessageForForward(msg):
 	msg_type = msg.get_type()
 
@@ -68,16 +71,16 @@ class MavManager(GTool):
 		
 		self.ip = "" # Ground Control Station(GCS) ip
 		self.data = "" # data from Pixhawk, temporary store here, can be access by other thread
-		self.loop = threading.Thread(target=self.loopFunction)
+		self.loop = threading.Thread(target=self.loopFunction, daemon = True)
 		self.loop.daemon = True
 		
-		self.loop2 = threading.Thread(target=self.processLoop) # process data with processLoop to prevent timeout from main loop function
+		self.loop2 = threading.Thread(target=self.processLoop, daemon = True) # process data with processLoop to prevent timeout from main loop function
 		self.loop2.daemon = True
 		
 	def startLoop(self):
 		self.loop.start()
 		self.loop2.start()
-		print("[o] MavManager: started")
+		logging.info(" [O] MavManager: started")
 	def setSensorGroupList(self, sgl):
 		self.sensor_group_list = sgl
 	# connect to Ground Control Station(GCS) with udp
@@ -89,16 +92,21 @@ class MavManager(GTool):
 				self.gcs_conn.close()			
 			self.gcs_conn = mavutil.mavlink_connection(f'udp:{ip}:14450', input=False)
 			self.GCS_connected = True
-			print(f"MavManager: GCS connected to {ip}")
+			logging.info(f" [O] MavManager: GCS connected to {ip}")
 		self.lock.release()
 		
 	# connect to pixhawk board with usb
 	def connectVehicle(self, dev):
 		if self.vehicle_conn != None:
 				self.vehicle_conn.close()
+		
 		self.vehicle_conn = mavutil.mavlink_connection(dev, baud=57600)
 		self.FC_connected = True
-		
+
+		# wait for heartbeat
+		while not self.vehicle_conn.wait_heartbeat(timeout=5):
+			logging.warning("  [!] MavManager: 飛控無回應...")
+		self.mav_connected = True
 		msg = self.vehicle_conn.mav.request_data_stream_encode(
 			0,
 			0,
@@ -107,7 +115,7 @@ class MavManager(GTool):
 			1, # Turn on
 		)
 		self.vehicle_conn.mav.send(msg)
-		print(f"MavManager: FC connected to {dev}")
+		logging.info(f" [O] MavManager: 飛控已連接於{dev}")
 
 	def loopFunction(self):
 		while True:

@@ -1,10 +1,13 @@
 import os
 import time
 import threading
+import csv
+import re
 
 from GTool import GTool
 from datetime import datetime
 from log_format import LogFormat
+from datetime import datetime
 
 class DataLogger(GTool):
     def __init__(self, toolbox):
@@ -20,14 +23,34 @@ class DataLogger(GTool):
         # ================================================================================
         self.log_folder_path = "../GPlayerLog"
         
-        self.log_directory = os.path.expanduser(self.log_folder_path)       # 設定log存放路徑
-        if(not os.path.exists(self.log_directory)):                         # 如果路徑不存在，則建立
-            os.makedirs(self.log_directory)                                 # 建立路徑
-        current_time = datetime.now()                                       # 取得目前時間
-        file_name = f"log_{current_time.strftime('%Y%m%d_%H%M')}.txt"       # 設定檔案名稱
-        self.log_file = os.path.join(self.log_directory, file_name)         # 檔案路徑
-        # ================================================================================
 
+        # 設定 log 存放路徑
+        self.log_directory = os.path.expanduser(self.log_folder_path)
+        if not os.path.exists(self.log_directory):
+            os.makedirs(self.log_directory)
+
+        # 找出所有 log_xxxxxxxx.csv 檔案
+        existing_files = [f for f in os.listdir(self.log_directory) if f.startswith("log_") and f.endswith(".csv")]
+
+        # 從檔名抓出數字部分
+        indices = []
+        for f in existing_files:
+            match = re.search(r"log_(\d+)\.csv", f)
+            if match:
+                indices.append(int(match.group(1)))
+
+        # 取最大值 + 1，如果沒有檔案就從 1 開始
+        file_index = max(indices) + 1 if indices else 1
+
+        # 檔名格式：log_00000001.csv
+        file_name = f"log_{file_index:08d}.csv"
+        self.log_file = os.path.join(self.log_directory, file_name)
+        self.log_folder_path = "./GPlayerLog"
+
+        # 建立 CSV 檔案，並寫入欄位名稱
+        with open(self.log_file, 'w', newline='', encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=self.log_data.__dict__.keys())
+            writer.writeheader()
         threading.Thread(target = self.looper, daemon = True).start() # 開始log
 
     def save_data(self):
@@ -40,6 +63,10 @@ class DataLogger(GTool):
         rmc_data = [-1]*10
         avr_data = [-1]*13
         gga_data = [-1]*16
+        super_taira_strength = -1
+        kbest_boat_rssi = -1
+        kbest_ground_rssi = -1
+        super_taira_error_byte = -1
 
         # 嘗試從工具箱中調用數據
         try:
@@ -65,17 +92,28 @@ class DataLogger(GTool):
                 gga_data = self._toolBox.deviceManager.ardusimple_device.get_GGAList()
         except Exception as e:
             print(f'DataLogger exception: ardusimple_device: msg:{e}')
+        try:
+            if self._toolBox.deviceManager.super_taira_device is not None:
+                super_taira_strength = self._toolBox.deviceManager.super_taira_device.strength
+                super_taira_error_byte = self._toolBox.deviceManager.super_taira_device.error_byte
+        except Exception as e:
+            print(f'DataLogger exception: super_taiRa: msg:{e}')
+
+        kbest_ground_rssi = self._toolBox.kBestReader.local_rssi  # 獲取 Kbest 的 RSSI 數據
+        kbest_boat_rssi = self._toolBox.kBestReader.remote_rssi  # 獲取 Kbest 的 Ground RSSI 數據
+
 
         # 更新 Log 資料
         try:
+            self.log_data.timestamp = self._toolBox.deviceManager.ardusimple_device.utc_time if self._toolBox.deviceManager.ardusimple_device else datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
             # Pixhawk Data
-            self.log_data.time_usec = mav_gps_data['time_usec']
+            self.log_data.time_usec = self._toolBox.deviceManager.ardusimple_device.utc_time
             self.log_data.fix_type = mav_gps_data['fix_type']
-            self.log_data.lat = mav_gps_data['lat']
-            self.log_data.lon = mav_gps_data['lon']
-            self.log_data.alt = mav_gps_data['alt']
-            self.log_data.HDOP = mav_gps_data['HDOP']
-            self.log_data.VDOP = mav_gps_data['VDOP']
+            self.log_data.lat = self._toolBox.deviceManager.ardusimple_device.lat #mav_gps_data['lat']
+            self.log_data.lon = self._toolBox.deviceManager.ardusimple_device.lon #mav_gps_data['lon']
+            self.log_data.alt = self._toolBox.deviceManager.ardusimple_device.alt #mav_gps_data['alt']
+            self.log_data.HDOP = self._toolBox.deviceManager.ardusimple_device.HDOP #mav_gps_data['HDOP']
+            self.log_data.VDOP = self._toolBox.deviceManager.ardusimple_device.VDOP #mav_gps_data['VDOP']
             self.log_data.depth = mav_depth
             # V2新增
             self.log_data.speed = mav_vfr_hud['groundspeed']
@@ -84,16 +122,16 @@ class DataLogger(GTool):
             self.log_data.yaw = mav_gps['yaw'] 
 
             # ArduSimple Accuracy
-            self.log_data.lat_acc = acc_data[0]
-            self.log_data.lon_acc = acc_data[1]
-            self.log_data.alt_acc = acc_data[2]
+            self.log_data.lat_acc = self._toolBox.deviceManager.ardusimple_device.lat_acc
+            self.log_data.lon_acc = self._toolBox.deviceManager.ardusimple_device.lon_acc
+            self.log_data.alt_acc = self._toolBox.deviceManager.ardusimple_device.alt_acc
             # V2新增
-            self.log_data.gps_speed = rmc_data[5]
-            self.log_data.gps_tilt = avr_data[4]
-            self.log_data.gps_yaw = avr_data[2]
+            self.log_data.gps_speed = self._toolBox.deviceManager.ardusimple_device.speed
+            self.log_data.gps_tilt = self._toolBox.deviceManager.ardusimple_device.tilt
+            self.log_data.gps_yaw = self._toolBox.deviceManager.ardusimple_device.yaw
             # V3新增
-            self.log_data.gps_orthometric_height = gga_data[9]
-            self.log_data.geoid_separation = gga_data[11]
+            self.log_data.gps_orthometric_height = self._toolBox.deviceManager.ardusimple_device.alt - self._toolBox.deviceManager.ardusimple_device.undulation
+            self.log_data.geoid_separation = self._toolBox.deviceManager.ardusimple_device.undulation
 
 
 
@@ -120,9 +158,16 @@ class DataLogger(GTool):
             self.log_data.external_voltage = aqua_data[19]                   # 20. 外部電壓
             self.log_data.battery_capacity_remaining = aqua_data[20]         # 21. 電池剩餘容量
 
+            self.log_data.kbest_boat_rssi = kbest_boat_rssi            # Kbest-船載接收訊號強度指標
+            self.log_data.kbest_ground_rssi = kbest_ground_rssi            # Kbest-基站接收訊
+            self.log_data.super_taira_strength = super_taira_strength      # SuperTaiRa-訊號強度指標
+            self.log_data.super_taira_error_byte = super_taira_error_byte    # SuperTaiRa-錯誤碼
+        
+
             # 保存到日誌檔案
-            with open(self.log_file, 'a') as log:
-                log.write(self.log_data.get_all())
+            with open(self.log_file, 'a', newline='', encoding="utf-8") as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.log_data.__dict__.keys())
+                writer.writerow(self.log_data.__dict__)
 
         except Exception as e:
             print(f'DataLogger exception: log_entry: msg:{e}')

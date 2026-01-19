@@ -30,6 +30,7 @@ DEVICE_TYPES = {
 
 class DeviceManager(GTool):
 	def __init__(self, toolBox):
+		logging.info(" [ ] DeviceManager: initializing...")
 		super().__init__(toolBox)
 		self.aqua_device = None
 		self.ardusimple_device = None

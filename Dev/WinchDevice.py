@@ -1,130 +1,35 @@
-/*
-  Examples:
-    stepper settings:          s,2000 1000 [operaton, maxSpeed acceleration]
-    stepper control:           c,10000 [operaton, steps]
-    stepper stop:              z,2
-    set tension limit          st,-1000
-    reset position             re
-    return tension             t
-*/
-#include <AccelStepper.h>
-#include <Arduino.h>
-#include <U8g2lib.h>
-#include "HX711.h"
-#ifdef U8X8_HAVE_HW_SPI
-#include <SPI.h>
-#endif
-#ifdef U8X8_HAVE_HW_I2C
-#include <Wire.h>
-#endif
-U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/ 5, /* data=*/ 4, /* reset=*/ U8X8_PIN_NONE);  //ESP8266板子搭配SSD1306用這行
-//U8G2_SSD1306_128X32_UNIVISION_1_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-#define STEP_PIN 14
-#define DIR_PIN 12
+import time
+import serial
+import struct
+import logging
+from Dev.Device import Device
 
-#define UPBTN 18
-#define DOWNBTN 21
-#define STOPBTN 19
-#define SETBTN 13
-
-// HX711 circuit wiring
-const int LOADCELL_DOUT_PIN = 26;
-const int LOADCELL_SCK_PIN = 33;
-
-int WL = 0;
-
-int BTN_STATE = 0; // 0:stop 1:up 2:down 3:reset
-bool remote_controlling = false;
-bool remote_rundown = false;
-int PRE_BTN_STATE = -1;
-
-int SCREEN_RATE = 1000;
-int SCREEN_T = 0;
-
-int STEPPER_CURRENT_P = 0;
-int OFFSET_P = 0;
-
-String isRunning = "S";
+# This device will connect to arduino, which canc accept command for winch control
+# Command for arduino
+            # stepper settings:          s,2,0,2 5 2000 1000 [operaton, header, ID, dirPin stepPin maxSpeed acceleration]
+            # stepper control:           c,2,2,800 [operaton, header, ID, steps]
+            # stepper stop:              z,2
 
 
-HX711 scale;
+CONTROL = b'\x05'
 
+class WinchDevice(Device):
+    def __init__(self, device_type, dev_path="", sensor_group_list = [], networkManager = None):
+        super().__init__(device_type, dev_path, sensor_group_list, networkManager)
+        self.isSerialInit = False
+        self.control_type = 0
+        try:
+            self.serialOut = serial.Serial(port = self.dev_path, baudrate = 9600, timeout = 5) 
+            self.isSerialInit = True
+            # initialize winch on arduino
+            self.send(f's,2000 1000')
 
+        except serial.serialutil.SerialException: # if serial error
+            logging.error("WinchDevice: Serial Error...")
+            logging.info("WinchDevice: Trying to reconnect...")
 
-int split(String& lstr, String& str, char sign){
-  int index = str.indexOf(sign);
-      
-  if(index != -1){
-    lstr = str.substring(0, index);
-    str = str.substring(index+1, str.length());
-  }else{
-    lstr = str.substring(index+1, str.length());   
-  }
-  return index;
-}
-
-AccelStepper stepper = AccelStepper(1, STEP_PIN, DIR_PIN, 4, 5);
-long reading = -60000;
-TaskHandle_t Task1;
-
-void Task1code( void * parameter) {
-    while(true) {
-      reading = scale.read();
-      delay(100);
-  
-    }
-}
-
-void setup() {
-  Serial.begin(9600);
-  
-  pinMode(UPBTN, INPUT_PULLUP);
-  pinMode(DOWNBTN, INPUT_PULLUP);
-  pinMode(STOPBTN, INPUT_PULLUP);
-  pinMode(SETBTN, INPUT_PULLUP);
-  stepper.setMaxSpeed(1000);
-  stepper.setAcceleration(500);
-  u8g2.begin();
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_logisoso16_tf); //設定字型
-  u8g2.drawStr(0,16,String("Pos:"+String(0)).c_str());  //輸出文字
-  u8g2.sendBuffer();
-  
-  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
-  Serial.println(xPortGetCoreID());
-  
-  xTaskCreatePinnedToCore(
-      Task1code, /* Function to implement the task */
-      "Task1", /* Name of the task */
-      10000,  /* Stack size in words */
-      NULL,  /* Task input parameter */
-      0,  /* Priority of the task */
-      &Task1,  /* Task handle. */
-      0); /* Core where the task should run */
-
-  delay(1000);
-
-  
-}
-
-unsigned long initialT = millis();
-int interval = 0;
-int preinterval = 0;
-
-void loop() {
-  if(digitalRead(STOPBTN) == LOW){
-    BTN_STATE = 0;
-  }else if(digitalRead(UPBTN) == LOW){
-    BTN_STATE = 1;
-  }else if(digitalRead(DOWNBTN) == LOW){
-    BTN_STATE = 2;
-  }else if(digitalRead(SETBTN) == LOW){
-    BTN_STATE = 3;
-  }
-
-  //long reading = scale.read();
-  
-  if(reading> WL){
+        except Exception as e: # if other error
+            logging.error(e) 
     
     if(PRE_BTN_STATE == 2 || remote_rundown == true){
       BTN_STATE = 0;
@@ -220,62 +125,81 @@ void loop() {
       stepper.move(1000000);
     }
     
-  }else if(BTN_STATE == 3){
-      stepper.setCurrentPosition(0);
-      OFFSET_P = 0;
-      WL = reading + 10000;
-    
-  }else{
+    # setter
+    def set(self):
+        pass
+        
+    # process command for control
+    def processCMD(self, control_type ,cmd):
+        if self.isSerialInit == False:
+            return
+        if control_type == self.control_type:
+            command_type = int(cmd[0])
+            logging.info(f"control:{control_type}, command type:{command_type}, ")
+            if command_type == 0:  # 讀取全部參數
+                logging.info("  - set")
+                # 待新增
+            elif command_type == 1:  # 讀取部分參數
+                pass
+            elif command_type == 2:  # 寫入全部參數
+                pass
 
-    stepper.run();
-    
-  }
+            elif command_type == 3: #寫入部分參數
+                index = int(cmd[1])
+                logging.info(f"write index:{index}")
+                if index == 0: #maxspeed
+                    maxSpeed = int(struct.unpack("<I", cmd[2:])[0])
+                    if maxSpeed>2000: #  maxspeed cant exceed 2000
+                        pass
+                    self.send(f's,{maxSpeed} {maxSpeed/2}')
+                    logging.info(f"set maxspeed:{maxSpeed}")
 
-  PRE_BTN_STATE = BTN_STATE;
+            elif command_type == 4: #回傳全部參數
+                pass
+            elif command_type == 5: #回傳部分參數
+                pass
+            elif command_type == 6: #move
+                step = int(struct.unpack("<i", cmd[1:])[0])
+                logging.info(f"WinchDevice: move step {step}")
+                if self.isSerialInit == True:
+                    self.send(f'c,{step}')
+            elif command_type == 7: #stop
+                self.send(f'z,')
+                logging.info("WinchDevice: stop")
+            elif command_type == 8: # report step tension
+                pass
+            elif command_type == 9: # reset position
+                self.send(f're')
+                logging.info("WinchDevic: reset")
 
-  STEPPER_CURRENT_P = OFFSET_P + stepper.currentPosition();
-  
-  
-  unsigned long currentT = millis();
-  
-
-  
-  if(currentT-initialT >= 250){
-    initialT = currentT;
-    interval++;
-  }
-
-  long int t1 = millis();
-  if(stepper.currentPosition() == stepper.targetPosition()){
-    remote_controlling = false;
-    isRunning = "S"; //R = running
-  }else{
-    isRunning = "R";  // S = stopped
-  }
-  if(currentT-SCREEN_T > SCREEN_RATE){
-    SCREEN_T = currentT;
-    Serial.println("cs,"+String(STEPPER_CURRENT_P)+","+String(reading)+","+isRunning);
-    
-  }
-
-  if (Serial.available() > 0) {
-    String data = Serial.readStringUntil('\n');
-    Serial.flush();
-    Serial.print("Receive data: ");
-    Serial.println(data);
-    int field = 0;
-    String operation = "0";
-    int index = 0;
-    while(index != -1){
-      index = data.indexOf(',');
-      String ldata = "";
-      
-      if(index != -1){
-        ldata = data.substring(0, index);
-        data = data.substring(index+1, data.length());
-      }else{
-        ldata = data.substring(index+1, data.length());
-      }
+            
+    def _io_loop(self):
+        step = 0
+        tension = 0
+        status = 0
+        while True:
+            input = self.serialOut.readline()
+            #logging.info(input)
+            try:
+                input = input.decode().split(",")
+                if input[0] == "cs":
+                    step = int(input[1])
+                    tension = int(input[2])
+                    if input[3][0] == 'S':
+                        status = 0
+                    elif input[3][0] == 'R':
+                        status = 1
+                    else:
+                        status = 3
+            except:
+                pass
+            time.sleep(0.2)
+            data = struct.pack("<B", self.control_type)
+            data += struct.pack("<B", 8)
+            data += struct.pack("<i", step)
+            data += struct.pack("<i", tension)
+            data += struct.pack("<B", status)
+            self.networkManager.sendMsg(b'\x05', data)
 
       
       if(field == 0){  

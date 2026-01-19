@@ -1,85 +1,319 @@
 import time
 import serial
+from pymodbus.client import ModbusSerialClient
+from pymodbus.exceptions import ModbusException
+import struct
+import logging
 
 from Dev.Device import Device
 from config import Config as CF
 
 SENSOR = b'\x04'
-
+node1_control_type = 2 # sonar control type: 2
+node2_control_type = 0 # winch control type: 0
 class RS485Device(Device):
     def __init__(self, device_type, dev_path="", sensor_group_list = [], networkManager = None):
-        super().__init__(device_type, dev_path, sensor_group_list, networkManager)
-        self.command_set = [
-            ['01', '04', '00', '01', '00', '02', '20', '0B'], # Temperature and Humidity
-            ["DD", "A5", "03", "00", "FF", "FD", "77"] # battery0
-        ]
-        self.cabin_temp = 0.0
-        self.cabin_hum = 0.0
-
-        self.total_voltage = 0.0
-        self.current = 0.0
-        self.capacity = 0.0
-        self.battery_temp = 0.0
-    
-    def start_loop(self):
-        super().start_loop()
-
-    def send(self, ser, command, length):
-        command = bytes([int(x, 16) for x in command]) # modbus RTU
-        ser.write(command) # if use modbus ASCII, add .encode('utf-8')
-        response = ser.read(length)
-        response = [format(x, '02x') for x in response]
-        # print(f"response: {response}")
-        return response
-
-    def Reader(self):
         try:
-            ser = serial.Serial(port = self.dev_path, baudrate = 9600, timeout = 5) 
-            for i in range(len(self.command_set)):
-                # print(i)
-                if(i == 0):
-                    data = self.send(ser = ser, command = self.command_set[i], length = 9) # send command to device
-                    if(len(data) == 9): # if data is not empty (check if data is correct)
-                        value1 = data[3] + data[4] # get the value
-                        self.cabin_temp = int(value1, 16) / 10 # convert hex to float
-                        value2 = data[5] + data[6] # get the value
-                        self.cabin_hum = int(value2, 16) / 10 # convert hex to float
+            super().__init__(device_type, dev_path, sensor_group_list, networkManager)
+            self.client = ModbusSerialClient(
+                port=self.dev_path,
+                baudrate=19200,
+                parity='E',
+                stopbits=1,
+                bytesize=8,
+                timeout=1
+            )
+            self.client.connect()
+            self.node1_addr = 0x11
+            self.node2_addr = 0x12
 
-                elif(i == 1):
-                    data = self.send(ser = ser, command = self.command_set[i], length = 34) # send command to device
-                    if(len(data) == 34): # if data is not empty (check if data is correct
-                        value1 = data[4] + data[5] # total voltage
-                        self.total_voltage = int(value1, 16) / 100 # convert hex to float (V)
+            self.node1Connected = False
+            self.node2Connected = False
 
-                        value2 = data[6] + data[7] # current
-                        self.current = int(value2, 16) / 100 # convert hex to float (A)
+            self.isSerialInit = True
+            self.sonarPWR = 0
+            self.status_code = 1
+        except Exception as e:
+            logging.info(f"   [X] RS485Device failed to start")
+            raise e
+        logging.info("   [O] RS485Device initialized")
+    def close(self):
+        self.client.close()
+    
+    # ---------- Node 1 (Sonar) ----------
 
-                        value3 = data[23] # capacity
-                        self.capacity = int(value3, 16) # convert hex to float (%)
+    def setSonarPWR(self, on: bool):
+        try:
+            coil_addr = 0  
+            self.client.write_coil(coil_addr, on, device_id=self.node1_addr)
+            self.sonarPWR = 1 if on else 0
+            logging.info(f"RS485Device: [Node1] Set sonar {'ON' if on else 'OFF'}")
+            self.node1Connected = True
+        except ModbusException as e:
+            logging.info(f"RS485Device: [Node1] Set sonar failed: {e}")
+            self.node1Connected = False
 
-                        value4 = data[27] + data[28] # battery temp 
-                        self.battery_temp = (int(value4, 16) - 2731) / 10 # convert hex to float (C)
-                time.sleep(1)
+    # ---------- Node 2 (Motor Controller) ----------
 
-        except serial.serialutil.SerialException: # if serial error
-            print("Serial Error...")
-            print("Trying to reconnect...")
+    def stopMotor(self):
+        try:
+            coil_addr = 0  
+            self.client.write_coil(coil_addr, False, device_id=self.node2_addr)
+            logging.info(f"RS485Device: [Node2] stop motor")
+        except ModbusException as e:
+            logging.info(f"RS485Device: [Node2] Set motor failed: {e}")
+            self.node2Connected = False
 
-        except Exception as e: # if other error
-            print(e) 
+    def setMaxSpeed(self, speed):
+        try:
+            self.client.write_register(0, speed, device_id=self.node2_addr)
+            logging.info(f"RS485Device: [Node2] Set MaxSpeed = {speed}")
+        except ModbusException as e:
+            logging.info(f"RS485Device: [Node2] Set MaxSpeed failed: {e}")
+            self.node2Connected = False
+
+    def setAcc(self, acc):
+        try:
+            self.client.write_register(1, acc, device_id=self.node2_addr)
+            logging.info(f"RS485Device: [Node2] Set Acc = {acc}")
+        except ModbusException as e:
+            logging.info(f"RS485Device: [Node2] Set Acc failed: {e}")
+            self.node2Connected = False
+
+    def setTensionThreshold(self, tension):
+        try:
+            high = (tension >> 16) & 0xFFFF
+            low = tension & 0xFFFF
+            self.client.write_registers(2, [high, low], device_id=self.node2_addr)
+            logging.info(f"RS485Device: [Node2] Set Tension Threshold = {tension}")
+        except ModbusException as e:
+            logging.info(f"RS485Device: [Node2] Set Tension Threshold failed: {e}")
+            self.node2Connected = False
+
+    def getCurrentStep(self):
+        try:
+            result = self.client.read_input_registers(8, count=2, device_id=self.node2_addr)
+            if result.isError():
+                logging.info("RS485Device: [Node2] Get Current Step failed")
+            else:
+                high, low = result.registers
+                step = (high << 16) | low
+                if step & 0x80000000:  # 補 signed
+                    step -= 0x100000000
+                logging.info(f"RS485Device: [Node2] Current Step = {step}")
+                return step
+        except ModbusException as e:
+            logging.info(f"[Node2] Get Current Step failed: {e}")
+            self.node2Connected = False
+        return None
+
+    def setCurrentStep(self, step):
+        try:
+            high = (step >> 16) & 0xFFFF
+            low = step & 0xFFFF
+            self.client.write_registers(6, [high, low], device_id=self.node2_addr)
+            logging.info(f"RS485Device: [Node2] Set Current Step = {step}")
+        except ModbusException as e:
+            logging.info(f"RS485Device: [Node2] Set Current Step failed: {e}")
+            self.node2Connected = False
+
+    def setTargetStep(self, step):
+        try:
+            high = (step >> 16) & 0xFFFF
+            low = step & 0xFFFF
+            # ESP 定義在 Hreg[4] → 40005
+            self.client.write_registers(4, [high, low], device_id=self.node2_addr)
+            logging.info(f"RS485Device: [Node2] Set Target Step = {step}")
+        except ModbusException as e:
+            logging.info(f"RS485Device: [Node2] Set Target Step failed: {e}")
+            self.node2Connected = False
+
+    def getStatus(self):
+        # read 30006~30010 (currentTension(32bit), currentStep(32bit), isRunning(16bit))
+        runningState = 0x00
+        try:
+            result = self.client.read_input_registers(6, count=5, device_id=self.node2_addr)
+            if result.isError():
+                logging.info("RS485Device: [Node2] Get Status failed")
+                return None
+            else:
+                regs = result.registers
+                tension = (regs[0] << 16) | regs[1]
+                step = (regs[2] << 16) | regs[3]
+                if step & 0x80000000:  # 補 signed
+                    step -= 0x100000000
+                runningState = regs[4]
+                #logging.info(f"[Node2] Status - Tension: {tension}, Step: {step}, RunningState: {'Running' if runningState==0xFF else 'Stopped'}")
+                tension = (regs[0] << 16) | regs[1]
+                if runningState == 0:
+                    status = 0
+                else:
+                    status = 1
+
+                data = struct.pack("<B", node2_control_type)
+                data += struct.pack("<B", 8)
+                data += struct.pack("<i", step)
+                data += struct.pack("<i", tension)
+                data += struct.pack("<B", status)
+                self.networkManager.sendMsg(b'\x05', data)
+                
+                return tension, step
+        except ModbusException as e:
+            logging.info(f"RS485Device: [Node2] Get Status failed: {e}")
+            self.node2Connected = False
+        return None
+        
+    def get_aqua_data(self):
+        # read input registers from 20, all 21 sensors, convert to 32-bit float
+        try:
+            result = self.client.read_input_registers(20, count=42, device_id=self.node2_addr)
+            if result.isError():
+                logging.info("RS485Device: [Node2] Get Aqua Data failed")
+                self.node2Connected = False
+                self.status_code = 0
+                return None
+            else:
+                regs = result.registers
+                aqua_data = []
+                for i in range(0, 42, 2):
+                    high = regs[i]
+                    low = regs[i+1]
+                    combined = (high << 16) | low
+                    float_value = struct.unpack('>f', struct.pack('>I', combined))[0]
+                    aqua_data.append(float_value)
+                    #save to sensor group 1
+                    if i//2 < len(self.sensor_group_list[1].get_all()):
+                        self.sensor_group_list[1].get_sensor(i//2).data = float_value
+                self.networkManager.sendMsg(SENSOR, self.sensor_group_list[1].pack()) # send the data to the network manager 
+                #logging.info(f"[Node2] Aqua Data: {aqua_data}")
+                self.status_code = 2
+                return aqua_data
+        except ModbusException as e:
+            logging.info(f"RS485Device: [Node2] Get Aqua Data failed: {e}")
+            self.node2Connected = False
+            return None
+
+    def testMotorManuver(self):
+        self.setMaxSpeed(2000)
+        time.sleep(0.5)
+        self.setAcc(500)
+        time.sleep(0.5)
+        self.setTensionThreshold(-1500)
+        time.sleep(0.5)
+        self.getCurrentStep()
+        time.sleep(0.5)
+        self.setCurrentStep(0)
+        time.sleep(1)
+        
+        count = 0
+        target = -10000
+        while True:
+            if count ==9:
+                count = 0
+                target = -target
+                self.stopMotor()
+                time.sleep(0.5)
+            self.setTargetStep(target)
+            self.getStatus()
+            
+            count += 1
+            time.sleep(1)
+    def testAqua(self):
+        while True:
+            self.get_aqua_data()
+            time.sleep(2)
+    def testSonar(self):
+        while True:
+            self.setSonarPWR(True)
+            time.sleep(5)
+            self.setSonarPWR(False)
+            time.sleep(5)
+    def testStatus(self):
+        while True:
+            self.getStatus()
+            time.sleep(2)
+    
+    # process command for control
+    def processCMD(self, control_type ,cmd):
+        if self.isSerialInit == False:
+            return
+        if control_type == node2_control_type:
+            command_type = int(cmd[0])
+            logging.info(f"RS485Device: control:{control_type}, command type:{command_type}, ")
+            if command_type == 0:  # 讀取全部參數
+                logging.info("  - set")
+                # 待新增
+            elif command_type == 1:  # 讀取部分參數
+                pass
+            elif command_type == 2:  # 寫入全部參數
+                pass
+
+            elif command_type == 3: #寫入部分參數
+                index = int(cmd[1])
+                logging.info(f"RS485Device: write index:{index}")
+                if index == 0: #maxspeed
+                    maxSpeed = int(struct.unpack("<I", cmd[2:])[0])
+                    if maxSpeed>2000: #  maxspeed cant exceed 2000
+                        pass
+                    # set maxspeed and acc
+                    self.setMaxSpeed(maxSpeed)
+                    time.sleep(0.1)
+                    self.setAcc(maxSpeed/2)
+                    logging.info(f"RS485Device: set maxspeed:{maxSpeed}")
+
+            elif command_type == 4: #回傳全部參數
+                pass
+            elif command_type == 5: #回傳部分參數
+                pass
+            elif command_type == 6: #move
+                step = int(struct.unpack("<i", cmd[1:])[0])
+                logging.info(f"RS485Device: [Winch] move step {step}")
+                if self.isSerialInit == True:
+                    self.setTargetStep(step)
+            elif command_type == 7: #stop
+                self.stopMotor()
+                logging.info("RS485Device: [Winch] stop")
+            elif command_type == 8: # report step tension
+                pass
+            elif command_type == 9: # reset position
+                self.setCurrentStep(0)
+                logging.info("RS485Device: [winch] reset")
+        elif control_type == 2:
+            logging.info("RS485Device: SonarDevice::getMsg")
+            command_type = int(cmd[0])
+            logging.info(f"RS485Device: control:{control_type}, command type:{command_type}, ")
+            if command_type == 0:  # 讀取全部參數
+                pass
+            elif command_type == 1:  # 讀取部分參數
+                pass
+            elif command_type == 2:  # 寫入全部參數
+                pass
+            elif command_type == 3: #寫入部分參數
+                pass
+            elif command_type == 4: #回傳全部參數
+                pass
+            elif command_type == 5: #回傳部分參數
+                pass
+            elif command_type == 6: #power
+                self.power = cmd[1]
+                if self.power == 1:
+                    self.setSonarPWR(True)
+                    logging.info("power on")
+                else:
+                    self.setSonarPWR(False)
+                    logging.info("power off")
+            elif command_type == 7: #power
+                data = struct.pack("<B", 2)
+                data += struct.pack("<B", 7)
+                data += struct.pack("<B", self.power)
+                self.networkManager.sendMsg(b'\x05', data)
 
     def _io_loop(self):
-        while(True):
-            self.Reader()
-            
-            self.sensor_group_list[0].get_sensor(0).data = self.cabin_temp
-            self.sensor_group_list[0].get_sensor(1).data = self.cabin_hum
-
-            self.sensor_group_list[2].get_sensor(0).data = self.total_voltage
-            self.sensor_group_list[2].get_sensor(1).data = self.current
-            self.sensor_group_list[2].get_sensor(2).data = self.capacity
-            self.sensor_group_list[2].get_sensor(3).data = self.battery_temp
-            
-            self.networkManager.sendMsg(SENSOR, self.sensor_group_list[0].pack())
-            self.networkManager.sendMsg(SENSOR, self.sensor_group_list[2].pack())
-            time.sleep(1)
+        
+            step = 0
+            tension = 0
+            status = 0
+            while True:
+                self.getStatus()
+                time.sleep(0.2)
+                
